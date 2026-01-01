@@ -1,30 +1,94 @@
-# Snowball Particle System
+# Snowball 3D 粒子系统
 
-A 3D particle system project with customizable shapes and text.
+这是一个基于 Three.js 的 3D 粒子系统项目，支持自定义文字形状、手势控制等酷炫效果。
 
-## Quick Start (macOS with Homebrew)
+## 功能特性
 
-You can use the automated setup script to install dependencies and start the project:
+- **多形状切换**：支持球体、立方体、螺旋、文字等多种粒子排列形状。
+- **自定义文字**：支持输入任意文字，粒子将自动排列成文字形状。
+- **手势交互**：通过摄像头识别手势，控制粒子的缩放和移动。
+- **动态配置**：内置控制面板，可实时调节颜色、大小、密度等参数。
+- **导入导出**：支持将当前粒子状态导出为 JSON 文件，或从文件加载。
+
+## 快速开始 (Git + NPM)
+
+这是最通用的安装方式，适用于所有支持 Node.js 的操作系统（Windows/macOS/Linux）。
+
+1.  **克隆项目**
+    ```bash
+    git clone git@github.com:luuweis/snowball.git
+    cd snowball
+    ```
+
+2.  **安装依赖**
+    ```bash
+    npm install
+    ```
+
+3.  **启动服务**
+    ```bash
+    npm start
+    ```
+
+## 快速开始 (自动化脚本)
+
+如果您使用的是 macOS 或 Linux，可以直接运行我们提供的自动化脚本来配置环境并启动服务：
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-## Manual Installation
+该脚本会自动检测并安装 Node.js (如果需要)，安装项目依赖，并启动预览服务。
 
-1. **Prerequisites**: Ensure [Node.js](https://nodejs.org/) is installed.
-   ```bash
-   node -v
-   ```
+## 手动安装与运行
 
-2. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
+如果您更喜欢手动控制，或使用的是 Windows 系统，请按照以下步骤操作：
 
-3. **Start Server**:
-   ```bash
-   npm start
-   ```
-   This will start the server at http://localhost:8080 and automatically open it in your browser.
+### 1. 环境准备
+确保您的电脑已安装 [Node.js](https://nodejs.org/)。
+在终端输入以下命令检查：
+```bash
+node -v
+```
+
+### 2. 安装依赖
+在项目根目录下运行：
+```bash
+npm install
+```
+
+### 3. 启动服务
+运行以下命令启动本地服务器：
+```bash
+npm start
+```
+服务启动后，浏览器通常会自动打开 `http://127.0.0.1:8080`。如果没有，请手动访问该地址。
+
+## 使用说明
+### PC 端 (键鼠 + 摄像头)
+- **控制面板**：右下角面板可调节所有参数。
+- **全屏模式**：点击底部“全屏模式”按钮进入沉浸式体验。
+- **键盘控制**：
+  - `↑` `↓` `←` `→`：控制视角旋转。
+- **鼠标控制**：
+  - 左键点击：选中粒子群。
+  - 拖拽：移动选中的粒子群。
+- **手势控制 (需摄像头)**：
+  - **单手捏合**：选中并拖拽最近的粒子群。
+  - **双手缩放**：另一只手张开为放大，握拳为缩小。
+  - **双手旋转**：保持一只手捏合选中，移动另一只手可控制粒子群旋转。
+
+### 移动端 (触控)
+- **视角控制**：
+  - **单指拖拽**：旋转全局视角。
+  - **虚拟按键**：使用屏幕下方的虚拟方向键精确控制视角。
+- **粒子操作**：
+  - **点击**：选中粒子群。
+  - **长按**：选中并自动打开该粒子群的设置面板。
+  - **单指拖动**：移动选中的粒子群。
+  - **双指操作**：同时进行缩放和水平旋转。
+  - **三指操作**：垂直旋转选中粒子群。
+- **文件管理**：
+  - 支持导出配置到本地文件（iPad 支持预览后保存）。
+  - 支持从文件导入配置恢复场景。
