@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势控制3D粒子系统</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        .input_video { display: none; }
+        
+        
+        /* UI 覆盖层 */
+        #ui-layer {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 10;
+            color: white;
+            pointer-events: none;
+        }
+
+        .controls-info {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 15px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 2px; }
+        p { margin: 5px 0; font-size: 0.9rem; color: #aaa; }
+        
+        .key {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        #fullscreen-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 100;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: 0.3s;
+        }
+        #fullscreen-btn:hover { background: rgba(255,255,255,0.1); }
+
+        
+    </style>
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- 引入 Lil-GUI -->
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17.0/dist/lil-gui.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <video class="input_video"></video>
+    <button id="fullscreen-btn">全屏模式</button>
+
+    <div id="ui-layer">
+        <div class="controls-info">
+            <h1>粒子系统</h1>
+            <p>⌨ <b>方向键:</b> 旋转视角</p>
+            <p>🖱 <b>鼠标:</b> 点击选择并拖动粒子群</p>
+            <p>🤚 <b>手势:</b> 单手捏合选中并拖动最近粒子群</p>
+            <p>✋ <b>双手:</b> 另一只手张开放大，握拳缩小</p>
+            <p>⚙ <b>手势参数:</b> 可在面板中调节阈值与缩放范围</p>
+            
+        </div>
+    </div>
+
+<script>
+    /**
+     * 1. 初始化场景变量
+     */
+    let scene, camera, renderer;
+    let particleSystems = [];
+    let gui;
+    let raycaster = new THREE.Raycaster();
+    raycaster.params.Points = { threshold: 0.5 };
+    let mouse = new THREE.Vector2();
+    let selectedSystem = null;
+    let isDragging = false;
+    let dragPlane = new THREE.Plane();
+    let dragOffset = new THREE.Vector3();
+    let pinchSession = { active: false, startWorld: new THREE.Vector3(), startGroupPos: new THREE.Vector3(), handIndex: -1 };
+    const gestureConfig = {
+        pinchThreshold: 0.09,
+        followLerp: 0.25,
+        worldScaleX: 30,
+        worldScaleY: 20,
+        openScore: 0.18,
+        fistScore: 0.10,
+        scaleMin: 0.4,
+        scaleMax: 2.5,
+        scaleLerp: 0.25
+    };
+    const AVAILABLE_SHAPES = ['sphere','cube','cuboid','cylinder','torus','spiral','crescent','semicircle','lightning','cone','heart','star','text','ellipsoid','pyramid','capsule'];
+    
+    
+    // 摄像机旋转参数
+    let camAngle = 0;
+    let camHeight = 0;
+    const CAM_RADIUS = 30;
+
+    // 纹理生成器 (避免加载外部图片跨域问题)
+    function createTexture(type) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const center = 16;
+        
+        ctx.clearRect(0,0,32,32);
+
+        if (type === 'glow') {
+            const grad = ctx.createRadialGradient(center, center, 0, center, center, 16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 32, 32);
+        } else if (type === 'rain') {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(14, 0, 4, 32);
+        } else if (type === 'snow') {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(16,0); ctx.lineTo(16,32);
+            ctx.moveTo(0,16); ctx.lineTo(32,16);
+            ctx.moveTo(4,4); ctx.lineTo(28,28);
+            ctx.moveTo(28,4); ctx.lineTo(4,28);
+            ctx.stroke();
+        } else {
+            // Default square
+            ctx.fillStyle = 'white';
+            ctx.fillRect(4,4,24,24);
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        return texture;
+    }
+
+    /**
+     * 2. 粒子群类 (ParticleCloud)
+     */
+        class ParticleCloud {
+            constructor(id, options = {}) {
+            this.id = id;
+            this.count = options.count || 2000;
+            this.color = options.color || '#00ffff';
+            this.size = options.size || 0.2;
+            this.shapeType = options.shapeType || 'glow';
+            this.spread = 10;
+            
+            // 几何体
+            this.geometry = new THREE.BufferGeometry();
+            this.positions = new Float32Array(this.count * 3);
+            this.targetPositions = new Float32Array(this.count * 3);
+            
+            // 初始化随机位置 (球体)
+            for(let i=0; i<this.count; i++) {
+                this.setTargetSphere(i, this.spread);
+                // 初始位置设为目标位置
+                this.positions[i*3] = this.targetPositions[i*3];
+                this.positions[i*3+1] = this.targetPositions[i*3+1];
+                this.positions[i*3+2] = this.targetPositions[i*3+2];
+            }
+
+            this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+            this.geometry.computeBoundingSphere();
+
+            // 材质
+            this.material = new THREE.PointsMaterial({
+                color: this.color,
+                size: this.size,
+                map: createTexture(this.shapeType),
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            this.mesh = new THREE.Points(this.geometry, this.material);
+            scene.add(this.mesh);
+
+            // 状态
+            this.currentShape = options.currentShape || 'sphere';
+            this.shapeChoices = ['sphere','cube','torus','spiral','cuboid','cylinder','crescent','semicircle','lightning','cone','heart','star','text','ellipsoid','pyramid','capsule'];
+            this.shapeScale = options.shapeScale || 15;
+            this.rotationSpeed = options.rotationSpeed || 0.002;
+            
+            // 文字形状相关
+            this.textString = options.textString || "AI";
+            this.textPoints = [];
+            this.generateTextPoints();
+
+            if (options.scale && typeof options.scale === 'object') {
+                const sx = options.scale.x ?? 1;
+                const sy = options.scale.y ?? 1;
+                const sz = options.scale.z ?? 1;
+                this.mesh.scale.set(sx, sy, sz);
+            }
+
+            if (options.position && typeof options.position === 'object') {
+                const px = options.position.x ?? 0;
+                const py = options.position.y ?? 0;
+                const pz = options.position.z ?? 0;
+                this.mesh.position.set(px, py, pz);
+            }
+        }
+
+        rand1(i, s=0) {
+            const x = Math.sin(i * 12.9898 + s * 78.233) * 43758.5453;
+            return x - Math.floor(x);
+        }
+
+        generateTextPoints() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const fontSize = 100;
+            const font = `900 ${fontSize}px sans-serif`; // Boldest
+            ctx.font = font;
+            const text = this.textString;
+            const metrics = ctx.measureText(text);
+            const width = Math.ceil(metrics.width) || 100;
+            const height = Math.ceil(fontSize * 1.5);
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            ctx.font = font;
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, width / 2, height / 2);
+            
+            const imgData = ctx.getImageData(0, 0, width, height);
+            const data = imgData.data;
+            this.textPoints = [];
+            
+            // 采样步长，越小越精细但点越多
+            const step = 2; 
+            for (let y = 0; y < height; y += step) {
+                for (let x = 0; x < width; x += step) {
+                    const index = (y * width + x) * 4;
+                    if (data[index + 3] > 128) {
+                        // 归一化坐标，以高度为基准
+                        const nx = (x - width / 2) / height; 
+                        const ny = -(y - height / 2) / height; 
+                        this.textPoints.push({x: nx, y: ny});
+                    }
+                }
+            }
+        }
+
+        setText(str) {
+            if (this.textString === str) return;
+            this.textString = str;
+            this.generateTextPoints();
+        }
+
+        // 辅助数学函数：设置第i个粒子的目标为球体表面
+        setTargetSphere(i, radius, offsetX=0, offsetY=0, offsetZ=0) {
+            const phi = Math.acos(-1 + (2 * i) / this.count);
+            const theta = Math.sqrt(this.count * Math.PI) * phi;
+            this.targetPositions[i*3] = radius * Math.cos(theta) * Math.sin(phi) + offsetX;
+            this.targetPositions[i*3+1] = radius * Math.sin(theta) * Math.sin(phi) + offsetY;
+            this.targetPositions[i*3+2] = radius * Math.cos(phi) + offsetZ;
+        }
+
+        // 辅助数学函数：设置第i个粒子的目标为立方体
+        setTargetCube(i, size, offsetX=0, offsetY=0, offsetZ=0) {
+            const side = Math.cbrt(this.count); // 简单估算
+            const x = (Math.random() - 0.5) * size + offsetX;
+            const y = (Math.random() - 0.5) * size + offsetY;
+            const z = (Math.random() - 0.5) * size + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetCubeSurface(i, size, offsetX=0, offsetY=0, offsetZ=0) {
+            const half = size * 0.5;
+            const face = i % 6;
+            const u = (this.rand1(i, 1) - 0.5) * size;
+            const v = (this.rand1(i, 2) - 0.5) * size;
+            let x = 0, y = 0, z = 0;
+            if (face === 0) { x = half; y = u; z = v; }
+            else if (face === 1) { x = -half; y = u; z = v; }
+            else if (face === 2) { y = half; x = u; z = v; }
+            else if (face === 3) { y = -half; x = u; z = v; }
+            else if (face === 4) { z = half; x = u; y = v; }
+            else { z = -half; x = u; y = v; }
+            this.targetPositions[i*3] = x + offsetX;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z + offsetZ;
+        }
+
+        setTargetTorus(i, R, r, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = (i / this.count) * Math.PI * 2;
+            const v = (((i * 7) % this.count) / this.count) * Math.PI * 2;
+            const x = (R + r * Math.cos(v)) * Math.cos(u) + offsetX;
+            const y = r * Math.sin(v) + offsetY;
+            const z = (R + r * Math.cos(v)) * Math.sin(u) + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetSpiral(i, turns, radius, height, offsetX=0, offsetY=0, offsetZ=0) {
+            const t = (i / this.count) * turns * Math.PI * 2;
+            const r = radius * (i / this.count);
+            const x = r * Math.cos(t) + offsetX;
+            const y = height * ((i / this.count) - 0.5) + offsetY;
+            const z = r * Math.sin(t) + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetSemiCircle(i, R, thickness=1, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = (i / this.count) * Math.PI;
+            const x = R * Math.cos(u) + offsetX;
+            const y = R * Math.sin(u) + offsetY;
+            const z = (this.rand1(i, 5) - 0.5) * thickness + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetLightning(i, length, segments, jitter=1, offsetX=0, offsetY=0, offsetZ=0) {
+            const t = i / this.count;
+            const x = -length * 0.5 + t * length;
+            const s = Math.floor(t * segments);
+            const dir = (s % 2 === 0) ? 1 : -1;
+            const amp = length * 0.1;
+            const y = dir * amp + (this.rand1(i, 6) - 0.5) * jitter;
+            const z = (this.rand1(i, 7) - 0.5) * jitter;
+            this.targetPositions[i*3] = x + offsetX;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z + offsetZ;
+        }
+
+        setTargetCone(i, height, baseR, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = (i / this.count) * Math.PI * 2;
+            const h = this.rand1(i, 8) * height;
+            const r = baseR * (1 - h / height);
+            const x = r * Math.cos(u) + offsetX;
+            const y = h - height * 0.5 + offsetY;
+            const z = r * Math.sin(u) + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetHeart(i, scale=8, thickness=2, offsetX=0, offsetY=0, offsetZ=0) {
+            const t = (i / this.count) * Math.PI * 2;
+            let x = Math.sin(t);
+            let y = Math.cos(t);
+            x = 16 * Math.pow(x, 3);
+            y = 13 * y - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+            x = (x / 16) * scale;
+            y = (y / 16) * scale;
+            const q = 0.3 + 0.7 * this.rand1(i, 9);
+            x *= q;
+            y *= q;
+            const z = (this.rand1(i, 10) - 0.5) * thickness;
+            this.targetPositions[i*3] = x + offsetX;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z + offsetZ;
+        }
+
+        setTargetStar(i, points=5, R=10, r=4, thickness=2, offsetX=0, offsetY=0, offsetZ=0) {
+            const a = (i / this.count) * Math.PI * 2;
+            const rad = r + (R - r) * 0.5 * (1 + Math.cos(points * a));
+            const q = this.rand1(i, 11);
+            const x = rad * q * Math.cos(a) + offsetX;
+            const y = rad * q * Math.sin(a) + offsetY;
+            const z = (this.rand1(i, 12) - 0.5) * thickness + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetText(i, scale=10, thickness=1.5, offsetX=0, offsetY=0, offsetZ=0) {
+            if (this.textPoints.length === 0) return;
+            const idx = Math.floor(this.rand1(i, 40) * this.textPoints.length);
+            const p = this.textPoints[idx];
+            
+            // 放大倍数调整，使文字大小适中
+            const s = scale * 2.0; 
+            const x = p.x * s + offsetX;
+            const y = p.y * s + offsetY;
+            const z = (this.rand1(i, 41) - 0.5) * thickness + offsetZ;
+            
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetEllipsoid(i, ax=10, ay=6, az=8, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = this.rand1(i, 14);
+            const v = this.rand1(i, 15);
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
+            const r = Math.cbrt(this.rand1(i, 16));
+            const x = ax * r * Math.sin(phi) * Math.cos(theta) + offsetX;
+            const y = ay * r * Math.sin(phi) * Math.sin(theta) + offsetY;
+            const z = az * r * Math.cos(phi) + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetPyramidSquare(i, base=12, height=10, offsetX=0, offsetY=0, offsetZ=0) {
+            const t = this.rand1(i, 17);
+            const y = -height * 0.5 + t * height;
+            const s = base * (1 - t);
+            const x = (this.rand1(i, 18) - 0.5) * s + offsetX;
+            const z = (this.rand1(i, 19) - 0.5) * s + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetCapsule(i, radius=6, halfLen=8, offsetX=0, offsetY=0, offsetZ=0) {
+            const w = this.rand1(i, 20);
+            if (w < 0.5) {
+                const theta = this.rand1(i, 21) * Math.PI * 2;
+                const rr = radius * Math.sqrt(this.rand1(i, 22));
+                const x = rr * Math.cos(theta) + offsetX;
+                const z = rr * Math.sin(theta) + offsetZ;
+                const y = (this.rand1(i, 23) * 2 - 1) * halfLen + offsetY;
+                this.targetPositions[i*3] = x;
+                this.targetPositions[i*3+1] = y;
+                this.targetPositions[i*3+2] = z;
+            } else {
+                const sign = this.rand1(i, 24) < 0.5 ? -1 : 1;
+                const theta = this.rand1(i, 25) * Math.PI * 2;
+                const phi = this.rand1(i, 26) * Math.PI * 0.5;
+                const r = radius * Math.cbrt(this.rand1(i, 27));
+                const x = r * Math.sin(phi) * Math.cos(theta) + offsetX;
+                const z = r * Math.sin(phi) * Math.sin(theta) + offsetZ;
+                const y = sign * halfLen + r * Math.cos(phi) + offsetY;
+                this.targetPositions[i*3] = x;
+                this.targetPositions[i*3+1] = y;
+                this.targetPositions[i*3+2] = z;
+            }
+        }
+
+        setTargetCuboid(i, w, h, d, offsetX=0, offsetY=0, offsetZ=0) {
+            const x = (Math.random() - 0.5) * w + offsetX;
+            const y = (Math.random() - 0.5) * h + offsetY;
+            const z = (Math.random() - 0.5) * d + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetCuboidSurface(i, w, h, d, offsetX=0, offsetY=0, offsetZ=0) {
+            const hx = w * 0.5;
+            const hy = h * 0.5;
+            const hz = d * 0.5;
+            const face = i % 6;
+            const u = (this.rand1(i, 3) - 0.5);
+            const v = (this.rand1(i, 4) - 0.5);
+            let x = 0, y = 0, z = 0;
+            if (face === 0) { x = hx; y = v * h; z = u * d; }
+            else if (face === 1) { x = -hx; y = v * h; z = u * d; }
+            else if (face === 2) { y = hy; x = u * w; z = v * d; }
+            else if (face === 3) { y = -hy; x = u * w; z = v * d; }
+            else if (face === 4) { z = hz; x = u * w; y = v * h; }
+            else { z = -hz; x = u * w; y = v * h; }
+            this.targetPositions[i*3] = x + offsetX;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z + offsetZ;
+        }
+
+        setTargetCylinder(i, radius, height, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = (i / this.count) * Math.PI * 2;
+            const y = (this.rand1(i, 28) - 0.5) * height + offsetY;
+            const x = radius * Math.cos(u) + offsetX;
+            const z = radius * Math.sin(u) + offsetZ;
+            this.targetPositions[i*3] = x;
+            this.targetPositions[i*3+1] = y;
+            this.targetPositions[i*3+2] = z;
+        }
+
+        setTargetCrescent(i, R, r, d, thickness, offsetX=0, offsetY=0, offsetZ=0) {
+            const u = (i / this.count) * Math.PI * 2;
+            const v = (((i * 13) % this.count) / this.count);
+            let rad = Math.sqrt(v) * R;
+            let x = rad * Math.cos(u);
+            let y = rad * Math.sin(u);
+            const dx = x - d;
+            const dy = y;
+            if (dx*dx + dy*dy < r*r) {
+                const dirX = Math.cos(u);
+                const dirY = Math.sin(u);
+                rad = r + (R - r) * v;
+                x = rad * dirX;
+                y = rad * dirY;
+            }
+            const z = ( (i * 37) % this.count ) / this.count * thickness - thickness * 0.5;
+            this.targetPositions[i*3] = x + offsetX;
+            this.targetPositions[i*3+1] = y + offsetY;
+            this.targetPositions[i*3+2] = z + offsetZ;
+        }
+
+        update() {
+            const positions = this.geometry.attributes.position.array;
+            for(let i=0; i<this.count; i++) {
+                const s = this.shapeScale;
+                if (this.currentShape === 'sphere') {
+                    this.setTargetSphere(i, s, 0, 0, 0);
+                } else if (this.currentShape === 'cube') {
+                    this.setTargetCubeSurface(i, s * 1.4, 0, 0, 0);
+                } else if (this.currentShape === 'torus') {
+                    this.setTargetTorus(i, s * 1.2, s * 0.35, 0, 0, 0);
+                } else if (this.currentShape === 'spiral') {
+                    this.setTargetSpiral(i, 6, s * 1.4, s * 1.0, 0, 0, 0);
+                } else if (this.currentShape === 'cuboid') {
+                    this.setTargetCuboidSurface(i, s * 1.5, s, s * 0.8, 0, 0, 0);
+                } else if (this.currentShape === 'cylinder') {
+                    this.setTargetCylinder(i, s, s * 1.6, 0, 0, 0);
+                } else if (this.currentShape === 'crescent') {
+                    this.setTargetCrescent(i, s * 1.2, s * 0.8, s * 0.6, s * 0.3, 0, 0, 0);
+                } else if (this.currentShape === 'semicircle') {
+                    this.setTargetSemiCircle(i, s * 1.2, s * 0.2, 0, 0, 0);
+                } else if (this.currentShape === 'lightning') {
+                    this.setTargetLightning(i, s * 2.0, 14, 1.5, 0, 0, 0);
+                } else if (this.currentShape === 'cone') {
+                    this.setTargetCone(i, s * 1.2, s * 0.9, 0, 0, 0);
+                } else if (this.currentShape === 'heart') {
+                    this.setTargetHeart(i, s, s * 0.15, 0, 0, 0);
+                } else if (this.currentShape === 'star') {
+                    this.setTargetStar(i, 5, s * 1.1, s * 0.5, s * 0.15, 0, 0, 0);
+                } else if (this.currentShape === 'text') {
+                    this.setTargetText(i, s * 0.5, s * 0.2, 0, 0, 0);
+                } else if (this.currentShape === 'ellipsoid') {
+                    this.setTargetEllipsoid(i, s * 1.1, s * 0.8, s * 1.0, 0, 0, 0);
+                } else if (this.currentShape === 'pyramid') {
+                    this.setTargetPyramidSquare(i, s * 1.2, s, 0, 0, 0);
+                } else if (this.currentShape === 'capsule') {
+                    this.setTargetCapsule(i, s * 0.6, s * 1.0, 0, 0, 0);
+                } else {
+                    this.setTargetSphere(i, s, 0, 0, 0);
+                }
+                const speed = 0.05;
+                positions[i*3]   += (this.targetPositions[i*3] - positions[i*3]) * speed;
+                positions[i*3+1] += (this.targetPositions[i*3+1] - positions[i*3+1]) * speed;
+                positions[i*3+2] += (this.targetPositions[i*3+2] - positions[i*3+2]) * speed;
+            }
+            
+            this.geometry.attributes.position.needsUpdate = true;
+            
+            this.mesh.rotation.y += this.rotationSpeed;
+        }
+
+        updateSettings(prop, value) {
+            if(prop === 'color') this.material.color.set(value);
+            if(prop === 'size') this.material.size = value;
+            if(prop === 'shapeType') {
+                this.shapeType = value;
+                this.material.map = createTexture(value);
+            }
+        }
+        
+        setCount(newCount) {
+            newCount = Math.max(100, Math.floor(newCount));
+            if (newCount === this.count) return;
+            this.count = newCount;
+            this.positions = new Float32Array(this.count * 3);
+            this.targetPositions = new Float32Array(this.count * 3);
+            for (let i = 0; i < this.count; i++) {
+                const s = this.shapeScale;
+                if (this.currentShape === 'sphere') {
+                    this.setTargetSphere(i, s, 0, 0, 0);
+                } else if (this.currentShape === 'cube') {
+                    this.setTargetCubeSurface(i, s * 1.4, 0, 0, 0);
+                } else if (this.currentShape === 'torus') {
+                    this.setTargetTorus(i, s * 1.2, s * 0.35, 0, 0, 0);
+                } else if (this.currentShape === 'spiral') {
+                    this.setTargetSpiral(i, 6, s * 1.4, s * 1.0, 0, 0, 0);
+                } else if (this.currentShape === 'cuboid') {
+                    this.setTargetCuboidSurface(i, s * 1.5, s, s * 0.8, 0, 0, 0);
+                } else if (this.currentShape === 'cylinder') {
+                    this.setTargetCylinder(i, s, s * 1.6, 0, 0, 0);
+                } else if (this.currentShape === 'crescent') {
+                    this.setTargetCrescent(i, s * 1.2, s * 0.8, s * 0.6, s * 0.3, 0, 0, 0);
+                } else if (this.currentShape === 'semicircle') {
+                    this.setTargetSemiCircle(i, s * 1.2, s * 0.2, 0, 0, 0);
+                } else if (this.currentShape === 'lightning') {
+                    this.setTargetLightning(i, s * 2.0, 14, 1.5, 0, 0, 0);
+                } else if (this.currentShape === 'cone') {
+                    this.setTargetCone(i, s * 1.2, s * 0.9, 0, 0, 0);
+                } else if (this.currentShape === 'heart') {
+                    this.setTargetHeart(i, s, s * 0.15, 0, 0, 0);
+                } else if (this.currentShape === 'star') {
+                    this.setTargetStar(i, 5, s * 1.1, s * 0.5, s * 0.15, 0, 0, 0);
+                } else if (this.currentShape === 'text') {
+                    this.setTargetText(i, s * 0.5, s * 0.2, 0, 0, 0);
+                } else if (this.currentShape === 'ellipsoid') {
+                    this.setTargetEllipsoid(i, s * 1.1, s * 0.8, s * 1.0, 0, 0, 0);
+                } else if (this.currentShape === 'pyramid') {
+                    this.setTargetPyramidSquare(i, s * 1.2, s, 0, 0, 0);
+                } else if (this.currentShape === 'capsule') {
+                    this.setTargetCapsule(i, s * 0.6, s * 1.0, 0, 0, 0);
+                } else {
+                    this.setTargetSphere(i, s, 0, 0, 0);
+                }
+                this.positions[i*3] = this.targetPositions[i*3];
+                this.positions[i*3+1] = this.targetPositions[i*3+1];
+                this.positions[i*3+2] = this.targetPositions[i*3+2];
+            }
+            this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+            this.geometry.computeBoundingSphere();
+        }
+        
+        dispose() {
+            scene.remove(this.mesh);
+            this.geometry.dispose();
+            this.material.dispose();
+        }
+    }
+
+    /**
+     * 3. 主程序逻辑
+     */
+    function init() {
+        // 场景设置
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        updateCameraPosition();
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // 默认创建一个粒子群
+        addParticleSystem();
+
+        // UI 初始化
+        initGUI();
+        
+        // 事件监听
+        window.addEventListener('resize', onWindowResize);
+        document.addEventListener('keydown', onKeyDown);
+        document.getElementById('fullscreen-btn').addEventListener('click', toggleFullScreen);
+        setupMouseControls();
+
+        // 启动循环
+        animate();
+    }
+
+    function setupMouseControls() {
+        const dom = renderer.domElement;
+        dom.addEventListener('mousedown', onMouseDown);
+        dom.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    }
+
+    function getMouseNDC(event) {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function onMouseDown(event) {
+        getMouseNDC(event);
+        raycaster.setFromCamera(mouse, camera);
+        const meshes = particleSystems.map(s => s.mesh);
+        const intersects = raycaster.intersectObjects(meshes, true);
+        if (intersects.length > 0) {
+            const mesh = intersects[0].object;
+            selectedSystem = particleSystems.find(s => s.mesh === mesh) || null;
+            const planePoint = selectedSystem.mesh.position.clone();
+            const planeNormal = camera.getWorldDirection(new THREE.Vector3());
+            dragPlane.setFromNormalAndCoplanarPoint(planeNormal, planePoint);
+            const p = new THREE.Vector3();
+            raycaster.ray.intersectPlane(dragPlane, p);
+            dragOffset.copy(selectedSystem.mesh.position).sub(p);
+            isDragging = true;
+            pinchSession.active = false;
+            pinchSession.handIndex = -1;
+        } else {
+            selectedSystem = null;
+            isDragging = false;
+        }
+    }
+
+    function onMouseMove(event) {
+        if (!isDragging || !selectedSystem) return;
+        getMouseNDC(event);
+        raycaster.setFromCamera(mouse, camera);
+        const p = new THREE.Vector3();
+        raycaster.ray.intersectPlane(dragPlane, p);
+        selectedSystem.mesh.position.copy(p.add(dragOffset));
+    }
+
+    function onMouseUp() {
+        isDragging = false;
+    }
+
+    function addParticleSystem(config = {}) {
+        const id = Date.now();
+        if (!config.currentShape) {
+            const idx = Math.floor(Math.random() * AVAILABLE_SHAPES.length);
+            config.currentShape = AVAILABLE_SHAPES[idx];
+        }
+        if (config.shapeScale == null) {
+            config.shapeScale = 15;
+        }
+        const sys = new ParticleCloud(id, config);
+        particleSystems.push(sys);
+        selectedSystem = sys;
+        refreshGUI(); // 刷新UI以显示新系统
+    }
+
+    function removeParticleSystem(sys) {
+        sys.dispose();
+        particleSystems = particleSystems.filter(s => s.id !== sys.id);
+        if (selectedSystem && selectedSystem.id === sys.id) {
+            selectedSystem = particleSystems[particleSystems.length - 1] || null;
+        }
+        refreshGUI();
+    }
+
+    function duplicateParticleSystem(sys) {
+        const conf = {
+            count: sys.count,
+            color: '#' + sys.material.color.getHexString(),
+            size: sys.material.size,
+            shapeType: sys.shapeType,
+            currentShape: sys.currentShape,
+            shapeScale: sys.shapeScale,
+            rotationSpeed: sys.rotationSpeed,
+            textString: sys.textString,
+            scale: {
+                x: sys.mesh.scale.x,
+                y: sys.mesh.scale.y,
+                z: sys.mesh.scale.z
+            },
+            position: {
+                x: sys.mesh.position.x + 2,
+                y: sys.mesh.position.y,
+                z: sys.mesh.position.z
+            }
+        };
+        addParticleSystem(conf);
+    }
+
+    function clearCanvas() {
+        particleSystems.forEach(sys => sys.dispose());
+        particleSystems = [];
+        selectedSystem = null;
+        refreshGUI();
+    }
+
+    /**
+     * GUI 设置面板 (使用 Lil-GUI)
+     */
+    function initGUI() {
+        refreshGUI();
+    }
+
+    function refreshGUI() {
+        if (gui && typeof gui.destroy === 'function') {
+            gui.destroy();
+        }
+        gui = new lil.GUI({ title: '控制面板' });
+        gui.domElement.style.position = 'fixed';
+        gui.domElement.style.bottom = '20px';
+        gui.domElement.style.right = '20px';
+        gui.domElement.style.top = 'auto';
+        gui.domElement.style.left = 'auto';
+        gui.domElement.style.zIndex = '100';
+
+        const globalConfig = {
+            addSystem: () => addParticleSystem({ 
+                color: '#' + Math.floor(Math.random()*16777215).toString(16),
+                shapeType: 'glow' 
+            }),
+            clearCanvas: () => clearCanvas(),
+            exportFile: () => exportStateToFile(),
+            importFile: () => importStateFromFile()
+        };
+
+        const folderGlobal = gui.addFolder('全局控制');
+        folderGlobal.add(globalConfig, 'addSystem').name('添加新粒子群');
+        folderGlobal.add(globalConfig, 'clearCanvas').name('清空画布');
+        
+        folderGlobal.add(globalConfig, 'exportFile').name('导出到文件');
+        folderGlobal.add(globalConfig, 'importFile').name('从文件加载');
+
+        const folderGesture = gui.addFolder('手势参数');
+        folderGesture.add(gestureConfig, 'pinchThreshold', 0.03, 0.2, 0.001).name('捏合阈值');
+        folderGesture.add(gestureConfig, 'followLerp', 0.05, 0.6, 0.01).name('跟随平滑');
+        folderGesture.add(gestureConfig, 'worldScaleX', 10, 60, 1).name('X映射尺度');
+        folderGesture.add(gestureConfig, 'worldScaleY', 10, 60, 1).name('Y映射尺度');
+        folderGesture.add(gestureConfig, 'openScore', 0.08, 0.35, 0.005).name('张开阈值');
+        folderGesture.add(gestureConfig, 'fistScore', 0.05, 0.25, 0.005).name('握拳阈值');
+        folderGesture.add(gestureConfig, 'scaleMin', 0.2, 1.0, 0.05).name('缩放下限');
+        folderGesture.add(gestureConfig, 'scaleMax', 1.0, 4.0, 0.1).name('缩放上限');
+        folderGesture.add(gestureConfig, 'scaleLerp', 0.05, 0.6, 0.01).name('缩放平滑');
+
+        // 为每个粒子系统创建文件夹
+        particleSystems.forEach((sys, index) => {
+            const folder = gui.addFolder(`粒子群 ${index + 1}`);
+            
+            const params = {
+                color: '#' + sys.material.color.getHexString(),
+                size: sys.material.size,
+                type: sys.shapeType,
+                count: sys.count,
+                delete: () => removeParticleSystem(sys),
+                duplicate: () => duplicateParticleSystem(sys),
+                shape: sys.currentShape,
+                shapeScale: sys.shapeScale,
+                rotationSpeed: sys.rotationSpeed,
+                textString: sys.textString
+            };
+
+            folder.addColor(params, 'color').name('颜色').onChange(v => sys.updateSettings('color', v));
+            folder.add(params, 'size', 0.01, 1).name('颗粒大小').onChange(v => sys.updateSettings('size', v));
+            folder.add(params, 'type', ['glow', 'rain', 'snow', 'square']).name('形状/材质').onChange(v => sys.updateSettings('shapeType', v));
+            folder.add(params, 'count', 200, 10000, 100).name('离子密度').onChange(v => { sys.setCount(v); });
+            folder.add(params, 'rotationSpeed', -0.02, 0.02, 0.0005).name('旋转速度').onChange(v => { sys.rotationSpeed = v; });
+            folder.add(params, 'shape', ['sphere','cube','cuboid','cylinder','torus','spiral','crescent','semicircle','lightning','cone','heart','star','text','ellipsoid','pyramid','capsule']).name('几何形状').onChange(v => { sys.currentShape = v; });
+            folder.add(params, 'textString').name('文字内容(仅Text有效)').onChange(v => { sys.setText(v); });
+            folder.add(params, 'shapeScale', 5, 40, 1).name('形状尺寸').onChange(v => { sys.shapeScale = v; });
+            folder.add(params, 'delete').name('删除此群');
+            folder.add(params, 'duplicate').name('复制此群');
+        });
+    }
+
+    /**
+     * 键盘控制摄像头
+     */
+    function onKeyDown(e) {
+        const speed = 0.1;
+        switch(e.key) {
+            case 'ArrowLeft': camAngle += speed; break;
+            case 'ArrowRight': camAngle -= speed; break;
+            case 'ArrowUp': if(camHeight < 20) camHeight += 1; break;
+            case 'ArrowDown': if(camHeight > -20) camHeight -= 1; break;
+        }
+        updateCameraPosition();
+    }
+
+    function updateCameraPosition() {
+        camera.position.x = Math.sin(camAngle) * CAM_RADIUS;
+        camera.position.z = Math.cos(camAngle) * CAM_RADIUS;
+        camera.position.y = camHeight;
+        camera.lookAt(0, 0, 0);
+    }
+
+    /**
+     * 存储功能
+     */
+    function saveState() {
+        const data = particleSystems.map(sys => ({
+            count: sys.count,
+            color: '#' + sys.material.color.getHexString(),
+            size: sys.material.size,
+            shapeType: sys.shapeType,
+            currentShape: sys.currentShape,
+            shapeScale: sys.shapeScale,
+            rotationSpeed: sys.rotationSpeed,
+            scale: {
+                x: sys.mesh.scale.x,
+                y: sys.mesh.scale.y,
+                z: sys.mesh.scale.z
+            },
+            position: {
+                x: sys.mesh.position.x,
+                y: sys.mesh.position.y,
+                z: sys.mesh.position.z
+            }
+        }));
+        localStorage.setItem('particleData', JSON.stringify(data));
+        alert('配置已保存！');
+    }
+
+    function loadState() {
+        const raw = localStorage.getItem('particleData');
+        if(!raw) { alert('没有找到存档'); return; }
+        
+        // 清除现有
+        particleSystems.forEach(s => s.dispose());
+        particleSystems = [];
+        
+        const data = JSON.parse(raw);
+        data.forEach(conf => addParticleSystem(conf));
+        alert('配置已加载');
+    }
+
+    function exportStateToFile() {
+        const data = particleSystems.map(sys => ({
+            count: sys.count,
+            color: '#' + sys.material.color.getHexString(),
+            size: sys.material.size,
+            shapeType: sys.shapeType,
+            currentShape: sys.currentShape,
+            shapeScale: sys.shapeScale,
+            rotationSpeed: sys.rotationSpeed,
+            textString: sys.textString,
+            scale: { x: sys.mesh.scale.x, y: sys.mesh.scale.y, z: sys.mesh.scale.z },
+            position: { x: sys.mesh.position.x, y: sys.mesh.position.y, z: sys.mesh.position.z }
+        }));
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `particle_state_${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    function importStateFromFile() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const data = JSON.parse(reader.result);
+                    particleSystems.forEach(s => s.dispose());
+                    particleSystems = [];
+                    data.forEach(conf => addParticleSystem(conf));
+                    refreshGUI();
+                    alert('文件已加载');
+                } catch (e) {
+                    alert('文件解析失败');
+                }
+            };
+            reader.readAsText(file);
+        };
+        input.click();
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function toggleFullScreen() {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen();
+        } else {
+            if (document.exitFullscreen) document.exitFullscreen();
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if (selectedSystem && handLandmarks && handLandmarks.length >= 1 && !isDragging) {
+            const pinchInfo = (hand) => {
+                const t = hand[4];
+                const i = hand[8];
+                const d = Math.hypot(t.x - i.x, t.y - i.y);
+                const mx = (t.x + i.x) * 0.5;
+                const my = (t.y + i.y) * 0.5;
+                return { d, mx, my };
+            };
+            const TH = gestureConfig.pinchThreshold;
+            let idx = -1;
+            let info = null;
+            for (let k = 0; k < handLandmarks.length; k++) {
+                const p = pinchInfo(handLandmarks[k]);
+                if (p.d < TH) { idx = k; info = p; break; }
+            }
+            if (idx !== -1) {
+                const wx = (0.5 - info.mx) * gestureConfig.worldScaleX;
+                const wy = (0.5 - info.my) * gestureConfig.worldScaleY;
+                const curWorld = new THREE.Vector3(wx, wy, 0);
+                if (!pinchSession.active || pinchSession.handIndex !== idx) {
+                    if (particleSystems.length > 0) {
+                        let nearest = particleSystems[0];
+                        let minDist = nearest.mesh.position.distanceTo(curWorld);
+                        for (let s = 1; s < particleSystems.length; s++) {
+                            const d = particleSystems[s].mesh.position.distanceTo(curWorld);
+                            if (d < minDist) { minDist = d; nearest = particleSystems[s]; }
+                        }
+                        selectedSystem = nearest;
+                    }
+                    pinchSession.active = true;
+                    pinchSession.handIndex = idx;
+                    pinchSession.startWorld.copy(curWorld);
+                    pinchSession.startGroupPos.copy(selectedSystem.mesh.position);
+                }
+                const delta = curWorld.clone().sub(pinchSession.startWorld);
+                const targetPos = pinchSession.startGroupPos.clone().add(delta);
+                selectedSystem.mesh.position.lerp(targetPos, gestureConfig.followLerp);
+
+                if (handLandmarks.length >= 2) {
+                    let other = null;
+                    for (let k = 0; k < handLandmarks.length; k++) {
+                        if (k !== idx) { other = handLandmarks[k]; break; }
+                    }
+                    if (other) {
+                        const pairs = [[8,5],[12,9],[16,13],[20,17]];
+                        let score = 0;
+                        for (let p = 0; p < pairs.length; p++) {
+                            const tip = other[pairs[p][0]];
+                            const base = other[pairs[p][1]];
+                            score += Math.hypot(tip.x - base.x, tip.y - base.y);
+                        }
+                        score /= pairs.length;
+                        const OPEN_S = gestureConfig.openScore;
+                        const FIST_S = gestureConfig.fistScore;
+                        const scaleMin = gestureConfig.scaleMin;
+                        const scaleMax = gestureConfig.scaleMax;
+                        const cur = selectedSystem.mesh.scale.x;
+                        let goal = cur;
+                        if (score >= OPEN_S) goal = scaleMax;
+                        else if (score <= FIST_S) goal = scaleMin;
+                        const kScale = gestureConfig.scaleLerp;
+                        const ns = cur + (goal - cur) * kScale;
+                        selectedSystem.mesh.scale.set(ns, ns, ns);
+                    }
+                }
+            } else {
+                pinchSession.active = false;
+                pinchSession.handIndex = -1;
+            }
+        } else {
+            pinchSession.active = false;
+            pinchSession.handIndex = -1;
+        }
+        particleSystems.forEach(sys => sys.update());
+        renderer.render(scene, camera);
+    }
+
+    /**
+     * MediaPipe Hands 设置
+     */
+    const videoElement = document.getElementsByClassName('input_video')[0];
+    let handLandmarks = [];
+    function onResults(results) {
+        if (results.multiHandLandmarks) {
+            handLandmarks = results.multiHandLandmarks;
+        } else {
+            handLandmarks = [];
+        }
+    }
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 640,
+        height: 480
+    });
+    init();
+    cameraUtils.start().catch(() => {});
+
+</script>
+</body>
+</html>

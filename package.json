@@ -1,0 +1,14 @@
+{
+  "name": "snowball-particle-system",
+  "version": "1.0.0",
+  "description": "3D Particle System with Custom Text Support",
+  "main": "index.html",
+  "scripts": {
+    "start": "http-server . -p 8080 -o"
+  },
+  "dependencies": {
+    "http-server": "^14.1.1"
+  },
+  "author": "",
+  "license": "ISC"
+}
