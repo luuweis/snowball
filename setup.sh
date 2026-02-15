@@ -32,5 +32,11 @@ else
 fi
 
 # Start the server
-echo "Starting the server..."
-npm start
+PORT=${1:-5001}
+echo "Starting the server on port $PORT..."
+
+if [ "$PORT" = "5001" ]; then
+    npm start
+else
+    npx http-server . -p $PORT -o
+fi

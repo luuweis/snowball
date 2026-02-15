@@ -1,2 +1,3 @@
 .ai-workflow-workspace/
 package-lock.json
+node_modules
